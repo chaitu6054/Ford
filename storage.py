@@ -339,15 +339,12 @@ class LocalStorage:
 
     _SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9._ -]+$")
 
-    def _output_root(self) -> str:
-        return os.path.abspath(str(self.output_root))
+    def _base_directory(self, root: Path | str) -> str:
+        """Absolute root with a trailing separator, so startswith() cannot match a sibling."""
+        return os.path.join(os.path.abspath(str(root)), "")
 
-    def _safe_output_path(self, destination_relative: str) -> str:
-        """Build an absolute path under output_root from an untrusted relative path.
-
-        Each segment is safelisted (no separators, no '..'), then the joined
-        absolute path is verified to sit under output_root before it is returned.
-        """
+    def _validated_segments(self, destination_relative: str) -> list[str]:
+        """Safelist every segment of an untrusted relative path (no '..', no separators)."""
         try:
             raw = str(destination_relative)
             if os.path.isabs(raw) or raw.startswith(("/", "\\")):
@@ -358,29 +355,21 @@ class LocalStorage:
             for segment in segments:
                 if segment in (".", "..") or not self._SAFE_SEGMENT.match(segment):
                     raise StorageError(f"Destination path contains an unsafe segment: {segment!r}")
-            base_directory = self._output_root()
-            candidate = os.path.abspath(os.path.join(base_directory, *segments))
-            if not candidate.startswith(base_directory + os.sep):
-                raise StorageError("Destination path escapes output root")
-            return candidate
+            return segments
         except Exception as exc:
             if isinstance(exc, RemarketingError):
                 raise
             raise StorageError("Unable to validate destination path") from exc
 
-    def _safe_input_path(self, source: Path | str) -> str:
-        """Accept only a direct-child .xlsx of input_dir; return its absolute path."""
+    def _validated_input_name(self, source: Path | str) -> str:
+        """Safelist an input file name: basename only, .xlsx, safe characters."""
         try:
-            input_root = os.path.abspath(str(self.input_dir))
             file_name = os.path.basename(str(source))
             if not file_name or not self._SAFE_SEGMENT.match(file_name):
                 raise StorageError("Input file name contains unsafe characters")
             if not file_name.lower().endswith(XLSX_SUFFIX):
                 raise StorageError("Input file must have an XLSX extension")
-            candidate = os.path.abspath(os.path.join(input_root, file_name))
-            if not candidate.startswith(input_root + os.sep) or not os.path.isfile(candidate):
-                raise StorageError("Input must be a direct-child file of the input directory")
-            return candidate
+            return file_name
         except Exception as exc:
             if isinstance(exc, RemarketingError):
                 raise
@@ -410,16 +399,23 @@ class LocalStorage:
     def archive_input(self, source: Path, paths: Any) -> Path:
         """Archive and remove the staged local input."""
         try:
-            base_directory = self._output_root()
-            safe_source = self._safe_input_path(source)
-            safe_destination = self._safe_output_path(str(paths.archived_input))
-            if safe_destination.startswith(base_directory + os.sep):
-                os.makedirs(os.path.dirname(safe_destination), exist_ok=True)
-                copy2(safe_source, safe_destination)
-                if safe_source != safe_destination:
-                    os.remove(safe_source)
-                return Path(safe_destination)
-            raise StorageError("Archive destination escapes output root")
+            input_base = self._base_directory(self.input_dir)
+            output_base = self._base_directory(self.output_root)
+            source_name = self._validated_input_name(source)
+            segments = self._validated_segments(str(paths.archived_input))
+
+            safe_source = os.path.abspath(os.path.join(input_base, source_name))
+            safe_destination = os.path.abspath(os.path.join(output_base, *segments))
+            if not safe_source.startswith(input_base) or not os.path.isfile(safe_source):
+                raise StorageError("Input must be a direct-child file of the input directory")
+            if not safe_destination.startswith(output_base):
+                raise StorageError("Archive destination escapes output root")
+
+            os.makedirs(os.path.dirname(safe_destination), exist_ok=True)
+            copy2(safe_source, safe_destination)
+            if safe_source != safe_destination:
+                os.remove(safe_source)
+            return Path(safe_destination)
         except Exception as exc:
             if isinstance(exc, RemarketingError):
                 raise
@@ -428,13 +424,16 @@ class LocalStorage:
     def publish_file(self, source: Path, destination_relative: str) -> Path:
         """Copy a generated file into the local production-equivalent layout."""
         try:
-            base_directory = self._output_root()
-            safe_destination = self._safe_output_path(destination_relative)
-            if safe_destination.startswith(base_directory + os.sep):
-                os.makedirs(os.path.dirname(safe_destination), exist_ok=True)
-                copy2(source, safe_destination)
-                return Path(safe_destination)
-            raise StorageError("Publish destination escapes output root")
+            output_base = self._base_directory(self.output_root)
+            segments = self._validated_segments(destination_relative)
+
+            safe_destination = os.path.abspath(os.path.join(output_base, *segments))
+            if not safe_destination.startswith(output_base):
+                raise StorageError("Publish destination escapes output root")
+
+            os.makedirs(os.path.dirname(safe_destination), exist_ok=True)
+            copy2(source, safe_destination)
+            return Path(safe_destination)
         except Exception as exc:
             if isinstance(exc, RemarketingError):
                 raise
@@ -445,14 +444,17 @@ class LocalStorage:
     def publish_text(self, text: str, destination_relative: str) -> Path:
         """Write text into the local production-equivalent layout."""
         try:
-            base_directory = self._output_root()
-            safe_destination = self._safe_output_path(destination_relative)
-            if safe_destination.startswith(base_directory + os.sep):
-                os.makedirs(os.path.dirname(safe_destination), exist_ok=True)
-                with open(safe_destination, "w", encoding="utf-8") as handle:
-                    handle.write(text)
-                return Path(safe_destination)
-            raise StorageError("Publish destination escapes output root")
+            output_base = self._base_directory(self.output_root)
+            segments = self._validated_segments(destination_relative)
+
+            safe_destination = os.path.abspath(os.path.join(output_base, *segments))
+            if not safe_destination.startswith(output_base):
+                raise StorageError("Publish destination escapes output root")
+
+            os.makedirs(os.path.dirname(safe_destination), exist_ok=True)
+            with open(safe_destination, "w", encoding="utf-8") as handle:
+                handle.write(text)
+            return Path(safe_destination)
         except Exception as exc:
             if isinstance(exc, RemarketingError):
                 raise
