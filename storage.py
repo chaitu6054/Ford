@@ -12,6 +12,8 @@ from typing import Any
 from .errors import ConfigurationError, InputDiscoveryError, RemarketingError, StorageError
 from .models import GCSObjectIdentity, RunManifest
 
+XLSX_SUFFIX = ".xlsx"
+
 try:
     from google.cloud import storage as google_storage
 except ImportError:  # pragma: no cover - optional outside production.
@@ -44,9 +46,9 @@ class GCSStorage:
             self._client = resolved_client
             self._bucket = self._client.bucket(bucket_name)
             self.bucket_name = str(bucket_name)
-        except RemarketingError:
-            raise
         except Exception as exc:
+            if isinstance(exc, RemarketingError):
+                raise
             raise ConfigurationError(f"Unable to configure GCS bucket {bucket_name!r}") from exc
 
     @staticmethod
@@ -72,9 +74,9 @@ class GCSStorage:
                 ),
                 key=lambda item: item.name,
             )
-        except RemarketingError:
-            raise
         except Exception as exc:
+            if isinstance(exc, RemarketingError):
+                raise
             raise StorageError(f"Unable to list GCS objects under {prefix!r}") from exc
 
     def list_xlsx_candidates(self, prefix: str = "input/") -> list[GCSObjectInfo]:
@@ -88,12 +90,12 @@ class GCSStorage:
                     if item.name.startswith(normalized)
                     else item.name
                 )
-                if "/" not in relative and relative.lower().endswith(".xlsx"):
+                if "/" not in relative and relative.lower().endswith(XLSX_SUFFIX):
                     candidates.append(item)
             return candidates
-        except RemarketingError:
-            raise
         except Exception as exc:
+            if isinstance(exc, RemarketingError):
+                raise
             raise StorageError(
                 f"Unable to discover XLSX candidates under {prefix!r}"
             ) from exc
@@ -110,9 +112,9 @@ class GCSStorage:
                 )
                 for item in self.list_xlsx_candidates(prefix)
             ]
-        except RemarketingError:
-            raise
         except Exception as exc:
+            if isinstance(exc, RemarketingError):
+                raise
             raise StorageError("Unable to list remarketing input candidates") from exc
 
     def list_xlsx_objects(self, prefix: str) -> list[GCSObjectInfo]:
@@ -122,11 +124,11 @@ class GCSStorage:
             return [
                 item
                 for item in self._list_objects(normalized)
-                if item.name.lower().endswith(".xlsx")
+                if item.name.lower().endswith(XLSX_SUFFIX)
             ]
-        except RemarketingError:
-            raise
         except Exception as exc:
+            if isinstance(exc, RemarketingError):
+                raise
             raise StorageError(f"Unable to list XLSX objects under {prefix!r}") from exc
 
     def download_exact(self, object_info: GCSObjectInfo, destination: Path | str) -> Path:
@@ -164,9 +166,9 @@ class GCSStorage:
             )
             copied.reload()
             return self._object_info(copied)
-        except RemarketingError:
-            raise
         except Exception as exc:
+            if isinstance(exc, RemarketingError):
+                raise
             raise StorageError(
                 f"Unable to copy GCS object {source.name!r} to {destination_name!r}"
             ) from exc
@@ -211,9 +213,9 @@ class GCSStorage:
                 generation=copied.generation,
                 size=copied.size,
             )
-        except RemarketingError:
-            raise
         except Exception as exc:
+            if isinstance(exc, RemarketingError):
+                raise
             raise StorageError(
                 f"Unable to archive exact GCS object {source.object_name!r}"
             ) from exc
@@ -234,9 +236,9 @@ class GCSStorage:
             )
             blob.reload()
             return self._object_info(blob)
-        except RemarketingError:
-            raise
         except Exception as exc:
+            if isinstance(exc, RemarketingError):
+                raise
             raise StorageError(
                 f"Unable to upload file to GCS object {destination_name!r}"
             ) from exc
@@ -258,9 +260,9 @@ class GCSStorage:
             )
             blob.reload()
             return self._object_info(blob)
-        except RemarketingError:
-            raise
         except Exception as exc:
+            if isinstance(exc, RemarketingError):
+                raise
             raise StorageError(
                 f"Unable to upload text to GCS object {destination_name!r}"
             ) from exc
@@ -283,9 +285,9 @@ class GCSStorage:
                 if item.name == object_name:
                     return item
             return None
-        except RemarketingError:
-            raise
         except Exception as exc:
+            if isinstance(exc, RemarketingError):
+                raise
             raise StorageError(f"Unable to inspect GCS object {object_name!r}") from exc
 
     def list_manifest_objects(self, output_prefix: str = "output/") -> list[GCSObjectInfo]:
@@ -303,9 +305,9 @@ class GCSStorage:
                 for item in self._list_objects(normalized)
                 if pattern.match(item.name)
             ]
-        except RemarketingError:
-            raise
         except Exception as exc:
+            if isinstance(exc, RemarketingError):
+                raise
             raise StorageError(
                 f"Unable to list production manifests under {output_prefix!r}"
             ) from exc
@@ -319,9 +321,9 @@ class GCSStorage:
                 if manifest.is_success:
                     manifests.append(manifest)
             return manifests
-        except RemarketingError:
-            raise
         except Exception as exc:
+            if isinstance(exc, RemarketingError):
+                raise
             raise StorageError("Unable to list successful processing manifests") from exc
 
 
@@ -361,9 +363,9 @@ class LocalStorage:
             if not candidate.startswith(base_directory + os.sep):
                 raise StorageError("Destination path escapes output root")
             return candidate
-        except RemarketingError:
-            raise
         except Exception as exc:
+            if isinstance(exc, RemarketingError):
+                raise
             raise StorageError("Unable to validate destination path") from exc
 
     def _safe_input_path(self, source: Path | str) -> str:
@@ -373,15 +375,15 @@ class LocalStorage:
             file_name = os.path.basename(str(source))
             if not file_name or not self._SAFE_SEGMENT.match(file_name):
                 raise StorageError("Input file name contains unsafe characters")
-            if not file_name.lower().endswith(".xlsx"):
+            if not file_name.lower().endswith(XLSX_SUFFIX):
                 raise StorageError("Input file must have an XLSX extension")
             candidate = os.path.abspath(os.path.join(input_root, file_name))
             if not candidate.startswith(input_root + os.sep) or not os.path.isfile(candidate):
                 raise StorageError("Input must be a direct-child file of the input directory")
             return candidate
-        except RemarketingError:
-            raise
         except Exception as exc:
+            if isinstance(exc, RemarketingError):
+                raise
             raise StorageError("Unable to validate input file path") from exc
 
     def resolve_single_input(self) -> Path | None:
@@ -391,7 +393,7 @@ class LocalStorage:
             candidates = sorted(
                 path
                 for path in self.input_dir.iterdir()
-                if path.is_file() and path.suffix.lower() == ".xlsx"
+                if path.is_file() and path.suffix.lower() == XLSX_SUFFIX
             )
             if not candidates:
                 return None
@@ -400,9 +402,9 @@ class LocalStorage:
                     f"Expected at most one XLSX, found {len(candidates)}"
                 )
             return candidates[0]
-        except RemarketingError:
-            raise
         except Exception as exc:
+            if isinstance(exc, RemarketingError):
+                raise
             raise StorageError("Unable to discover local input") from exc
 
     def archive_input(self, source: Path, paths: Any) -> Path:
@@ -418,9 +420,9 @@ class LocalStorage:
                     os.remove(safe_source)
                 return Path(safe_destination)
             raise StorageError("Archive destination escapes output root")
-        except RemarketingError:
-            raise
         except Exception as exc:
+            if isinstance(exc, RemarketingError):
+                raise
             raise StorageError(f"Unable to archive local input {source}") from exc
 
     def publish_file(self, source: Path, destination_relative: str) -> Path:
@@ -433,9 +435,9 @@ class LocalStorage:
                 copy2(source, safe_destination)
                 return Path(safe_destination)
             raise StorageError("Publish destination escapes output root")
-        except RemarketingError:
-            raise
         except Exception as exc:
+            if isinstance(exc, RemarketingError):
+                raise
             raise StorageError(
                 f"Unable to publish local file {destination_relative}"
             ) from exc
@@ -451,9 +453,9 @@ class LocalStorage:
                     handle.write(text)
                 return Path(safe_destination)
             raise StorageError("Publish destination escapes output root")
-        except RemarketingError:
-            raise
         except Exception as exc:
+            if isinstance(exc, RemarketingError):
+                raise
             raise StorageError(
                 f"Unable to publish local text {destination_relative}"
             ) from exc
@@ -469,7 +471,7 @@ class LocalStorage:
                 if manifest.is_success:
                     manifests.append(manifest)
             return manifests
-        except RemarketingError:
-            raise
         except Exception as exc:
+            if isinstance(exc, RemarketingError):
+                raise
             raise StorageError("Unable to read local success manifests") from exc
