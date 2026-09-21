@@ -1,226 +1,184 @@
-"""Configuration France Inventory Reporting. Rien n'est traduit : les noms restent en français."""
-
+"""Application configuration loader shared by Airflow and local execution."""
 from __future__ import annotations
 
-import os
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
-# ---- GCS ------------------------------------------------------------------
-GCP_CONN_ID = "google_cloud_default"
-BUCKET_INPUT = "prj-ml-cap-rv-uk-d-tg-rv-fr-inv-input"
-BUCKET_OUTPUT = "prj-ml-cap-rv-uk-d-tg-rv-fr-inv-output"
-MODELE_FICHIER_REMARKETING = "remarketing_{month}.xlsx"
-MODELE_FICHIER_PORTEFEUILLE = "portefeuille_{month}.xlsx"  # optionnel
-MODELE_FICHIER_TAUX = "taux_{month}.xlsx"  # optionnel (Bookkeeping Rates)
-PREFIXE_MARQUEUR = "_processed"
+import yaml
 
-# ---- Notifications ---------------------------------------------------------
-SMTP_CONN_ID = "smtp_default"
-MAIL_FROM = "EURVSMTP@FORD.COM"
-MAIL_TO = {"dev": ["EURV_FR_OPERATIONS_DEV@FORD.COM"], "prod": ["EURV_FR_OPERATIONS_PROD@FORD.COM"]}
-MAIL_TO_ECHEC_SUPPLEMENT: list[str] = []  # contacts FBS à ajouter sur les échecs (renseigner)
-SUJET = "France Remarketing workbook reconciliation {month} - {statut}"
+from .errors import ConfigurationError
+
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "workbook.yml"
+DEFAULT_GCS_INPUT_BUCKET = "prj-ml-cap-rv-uk-d-tg-rv-fr-inv-input"
+DEFAULT_GCS_OUTPUT_BUCKET = "prj-ml-cap-rv-uk-d-tg-rv-fr-inv-output"
 
 
-def environnement() -> str:
-    """Environnement."""
+def _validated_config_path(config_path: Path | str) -> Path:
     try:
-        env = os.environ.get("FR_INVENTORY_ENV")
-        if env:
-            return env
-        return (
-            "dev"
-            if "astrodev"
-            in os.environ.get(
-                "AIRFLOW__API__BASE_URL", os.environ.get("AIRFLOW__WEBSERVER__BASE_URL", "astrodev")
-            )
-            else "prod"
-        )
-    except Exception:
+        path = Path(config_path).expanduser()
+        if path.suffix.lower() not in {".yml", ".yaml"}:
+            raise ConfigurationError("Configuration path must be a YAML file")
+        if any(part == ".." for part in path.parts):
+            raise ConfigurationError("Configuration path cannot include parent traversal")
+        return path.resolve()
+    except ConfigurationError:
         raise
+    except Exception as exc:
+        raise ConfigurationError("Unable to validate configuration path") from exc
 
 
-# ---- Feuilles du classeur de base -----------------------------------------
-FEUILLE_REMARKETING = "Remarketing"
-FEUILLE_REPOSSESSION = "Repossession"
-FEUILLE_CODE_COULEUR = "code couleur"
-PREFIXE_FEUILLE_FSA = "FSA-UPDATE"
+@dataclass(frozen=True, slots=True)
+class AppConfig:
+    """Resolved runtime configuration for the reporting application."""
 
-# ---- Règles métier confirmées par Soraya (15/09/2026) -----------------------
-RESTITUABLE_EXCLUS = {"NON"}  # OUI + NC inclus
-CANAUX = {
-    "vp auto": "Physical Auctions",
-    "vpauto": "Physical Auctions",
-    "bca": "Physical Auctions",
-    "autorola": "Physical Auctions",
-    "concilian": "Physical Auctions",
-    "dealer": "Franchised Dealers",
-    "sica": "Franchised Dealers",
-}
-LIGNES_CANAUX = [
-    "Franchised Dealers",
-    "Physical Auctions",
-    "Closed bidding",
-    "PACE / FLEETPACE",
-    "Traders",
-    "Export",
-    "Internet",
-    "Write Offs / Insurance",
-    "Retail / Employees",
-    "Others",
-]
-STATUT_VENDU = "solde"
-LIBELLE_STATUT_L = "statut l"  # couleur orange dans l'onglet code couleur
-DATE_MIN_VALIDE = "1950-01-01"
-TAUX_RETURN_FEES = 0.02
+    bucket_name: str | None
+    output_bucket_name: str | None
+    input_prefix: str
+    output_prefix: str
+    watcher_schedule: str
+    allowed_extensions: tuple[str, ...]
+    required_sheets: tuple[str, ...]
+    report_sheets: tuple[str, ...]
+    technical_sheets: tuple[str, ...]
+    fidelity_enabled: bool
+    report_filename_pattern: str
+    reconciliation_filename: str
+    manifest_pattern: str
+    reference_dir: Path
+    template_path: Path
+    full_fidelity: bool = False
+    france_reports_enabled: bool = True
 
-BUCKETS = [
-    (0, 30, "0-30 Days"),
-    (31, 60, "31-60 Days"),
-    (61, 90, "61-90 Days"),
-    (91, 120, "91-120 Days"),
-    (121, 150, "121-150 Days"),
-    (151, 180, "151-180 Days"),
-    (181, 360, "181-360 Days"),
-    (361, 10**9, "360+ Days"),
-]
-LIBELLES_BUCKETS = [b[2] for b in BUCKETS]
 
-# ---- Colonnes (noms tels qu'ils apparaissent dans le classeur) --------------
-COLONNES = {
-    "CONTRAT": ("Contrat", "Numero contrat"),
-    "VIN": ("VIN",),
-    "STATUT": ("Statut",),
-    "ETAPE": ("Etape",),
-    "DATE_RETOUR": ("Date de retour", "Date d'inscription de dossier"),
-    "RESTITUABLE": ("Restituable",),
-    "VENDEUR": ("Vendeur",),
-    "MODEL": ("Model", "Modele"),
-    "FUEL": ("Fuel Type", "Engine (a remplir Risk)"),
-    "DATE_REVENTE": ("date revente",),
-    "VALEUR_REVENTE": ("Valeur revente TTC", "Valeur revente"),
-    "ARGUS_PROF": ("Cote ARGUS prof",),
-    "VFMG": ("VFMG",),
-    "BALANCE_US": ("Balance US",),
-    "KM": ("Kilométrage fait par le client", "km"),
-    "COUVERT": ("COUVERT BLESS PAR AN",),
-    "QUOTAS": ("quotos", "quotas"),
-    "MONTANT_FACTURER": ("Montant a facturer le client", "Montant a facturer le client2"),
-    "FRAIS_VENTE": ("Frais à la Vente",),
-    "FRAIS_REMISE": ("Frais remise en etat",),
-    "DATE_MATURITE": ("DateMaturite", "Date Maturite"),
-    "CONTRAT_TERMS": ("Contrat Terms (mois)",),
-}
-COLONNES_REQUISES_REMARKETING = (
-    "Contrat",
-    "VIN",
-    "Statut",
-    "Date de retour",
-    "Restituable",
-    "Vendeur",
-    "Model",
-    "date revente",
-    "Valeur revente TTC",
-    "Cote ARGUS prof",
-    "VFMG",
-)
+def _nested(data: Mapping[str, Any], section: str, key: str, default: Any) -> Any:
+    try:
+        value = data.get(section, {})
+        if not isinstance(value, Mapping):
+            return default
+        return value.get(key, default)
+    except Exception as exc:
+        raise ConfigurationError(
+            f"Unable to read configuration value {section}.{key}"
+        ) from exc
 
-# ---- Rapport ERA (France TCM Ford) -------------------------------------------
-ERA_ICE = [
-    "EcoSport",
-    "Fiesta",
-    "Focus",
-    "Puma",
-    "Kuga",
-    "Mondeo",
-    "Mustang",
-    "S-Max",
-    "Galaxy",
-    "Tourneo Courier",
-    "Tourneo Connect",
-    "Ranger",
-    "Transit Courier",
-    "Transit Connect",
-    "Transit Custom",
-    "Transit Van",
-    "Tourneo Custom",
-    "Explorer",
-]
-ERA_BEV = [
-    "Mustang Mach-E",
-    "Explorer",
-    "Capri",
-    "Puma Gen-E",
-    "Tourneo Courier",
-    "Transit Courier",
-    "Transit Custom",
-    "Transit Van",
-    "Tourneo Custom",
-]
-ERA_USED = ["Used ICE Vehicles", "Used BEV Vehicles"]
-ERA_INCONNU = "Unknown/ Not recognised"
-# Model (fichier de base) -> ligne ERA. Les modèles en majuscules viennent de la colonne Model.
-ERA_MODELES = {
-    "puma": "Puma",
-    "kuga": "Kuga",
-    "focus": "Focus",
-    "fiesta": "Fiesta",
-    "mach-e": "Mustang Mach-E",
-    "mustang mach-e": "Mustang Mach-E",
-    "explorer": "Explorer",
-    "capri": "Capri",
-    "puma gen-e": "Puma Gen-E",
-    "ecosport": "EcoSport",
-    "mondeo": "Mondeo",
-    "mustang": "Mustang",
-    "s-max": "S-Max",
-    "galaxy": "Galaxy",
-    "ranger": "Ranger",
-    "tourneo courier": "Tourneo Courier",
-    "tourneo connect": "Tourneo Connect",
-    "tourneo custom": "Tourneo Custom",
-    "transit courier": "Transit Courier",
-    "transit connect": "Transit Connect",
-    "transit custom": "Transit Custom",
-    "transit van": "Transit Van",
-    "transit": "Transit Van",
-}
-FUEL_BEV = {"electric", "électrique", "bev"}
-ERA_COLONNES = [
-    "Month End Inventory Position",
-    "No. of vehicles returned to FCE",
-    "Accounts Expiring",
-    "Return rate (%)",
-    "No. of vehicles disposed of in month",
-    "Sales Proceeds",
-    "Disposal / Remarketing Costs",
-    "Excess Mileage Charges",
-    "Damage / Other Costs",
-    "Insurance Other",
-    "Net Sales Proceeds",
-    "Net Placement LEV (OFP)",
-    "Average disposal price",
-    "Average placement LEV (OFP)",
-    "Profit per Unit",
-    "Total Profit",
-]
-ERA_COLONNES_MONTANT = ERA_COLONNES[5:]  # converties en $ dans la feuille OUTPUT
-TAUX_CHANGE_DEFAUT = None  # EUR -> USD ; None = feuille OUTPUT non produite
 
-# ---- Portefeuille (fichier optionnel) -----------------------------------------
-PORTEFEUILLE_FEUILLE = 0
-PORTEFEUILLE_COLONNES = {
-    "CONTRAT": ("Contrat", "Numero contrat", "N° contrat", "Numéro de contrat"),
-    "VIN": ("VIN", "N° de série", "Numero de serie"),
-    "MODEL": ("Model", "Modele", "Modèle"),
-    "DATE_MATURITE": (
-        "DateMaturite",
-        "Date Maturite",
-        "Date de maturité",
-        "Date fin contrat",
-        "Maturité",
-    ),
-    "PLAN": ("Plan", "Produit", "Type produit", "Code Plan"),
-    "MARQUE": ("Marque", "Brand"),
-}
-PORTEFEUILLE_PLAN_TCM = {"tcm"}
-PORTEFEUILLE_MARQUE_FORD = {"ford"}
+def load_config(
+    config_path: Path | str = DEFAULT_CONFIG_PATH,
+    *,
+    overrides: Mapping[str, Any] | None = None,
+    require_bucket: bool = False,
+) -> AppConfig:
+    """Load YAML defaults and apply explicit overrides."""
+    try:
+        path = _validated_config_path(config_path)
+        data: dict[str, Any] = {}
+        if path.exists():
+            loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            if not isinstance(loaded, dict):
+                raise ConfigurationError("workbook.yml must contain a mapping")
+            data = loaded
+
+        custom = dict(overrides or {})
+
+        bucket_name = (
+            custom.get("bucket_name")
+            or _nested(data, "storage", "bucket_name", None)
+            or DEFAULT_GCS_INPUT_BUCKET
+        )
+        output_bucket_name = (
+            custom.get("output_bucket_name")
+            or _nested(data, "storage", "output_bucket_name", None)
+            or DEFAULT_GCS_OUTPUT_BUCKET
+        )
+        input_prefix = str(
+            custom.get("input_prefix")
+            or _nested(data, "storage", "input_prefix", "input/")
+        )
+        output_prefix = str(
+            custom.get("output_prefix")
+            or _nested(data, "storage", "output_prefix", "output/")
+        )
+        watcher_schedule = str(
+            custom.get("watcher_schedule")
+            or _nested(data, "watcher", "schedule", "*/5 * * * *")
+        )
+
+        if require_bucket and not bucket_name:
+            raise ConfigurationError("GCS input bucket is required")
+
+        root = path.resolve().parent
+        return AppConfig(
+            bucket_name=None if not bucket_name else str(bucket_name),
+            output_bucket_name=(
+                None if not output_bucket_name else str(output_bucket_name)
+            ),
+            input_prefix=input_prefix,
+            output_prefix=output_prefix,
+            watcher_schedule=watcher_schedule,
+            allowed_extensions=tuple(
+                str(value)
+                for value in _nested(
+                    data,
+                    "workbook",
+                    "allowed_extensions",
+                    [".xlsx"],
+                )
+            ),
+            required_sheets=tuple(
+                str(value)
+                for value in _nested(
+                    data,
+                    "workbook",
+                    "required_sheets",
+                    ["Remarketing"],
+                )
+            ),
+            report_sheets=tuple(
+                str(value)
+                for value in _nested(data, "workbook", "report_sheets", [])
+            ),
+            technical_sheets=tuple(
+                str(value)
+                for value in _nested(data, "workbook", "technical_sheets", ["Remarketing"])
+            ),
+            fidelity_enabled=bool(_nested(data, "fidelity", "enabled", True)),
+            report_filename_pattern=str(
+                _nested(
+                    data,
+                    "report",
+                    "filename_pattern",
+                    "REMARKETING_REPOSSESSION_REPORT_{date}.xlsx",
+                )
+            ),
+            reconciliation_filename=str(
+                _nested(
+                    data,
+                    "report",
+                    "reconciliation_filename",
+                    "reconciliation.xlsx",
+                )
+            ),
+            manifest_pattern=str(
+                _nested(
+                    data,
+                    "report",
+                    "manifest_pattern",
+                    "run_summary_{date}.json",
+                )
+            ),
+            reference_dir=(root / "reference").resolve(),
+            template_path=(root / "report_template.xlsx").resolve(),
+            full_fidelity=bool(custom.get("full_fidelity", False)),
+            france_reports_enabled=bool(
+                custom.get(
+                    "france_reports_enabled",
+                    _nested(data, "france_reports", "enabled", True),
+                )
+            ),
+        )
+    except ConfigurationError:
+        raise
+    except Exception as exc:
+        raise ConfigurationError(f"Unable to load configuration from {config_path}") from exc
